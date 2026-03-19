@@ -1,0 +1,18 @@
+name: fl_dp_env
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - pytorch
+  - torchvision
+  - numpy
+  - matplotlib
+  - pandas
+  - pip:
+    - flwr==1.4.0         # Phiên bản Flower ổn định
+    - opacus==1.4.0       # Thư viện Differential Privacy
+    - streamlit           # Để làm Dashboard sau này
+    - tqdm                # Thanh tiến trình khi training
