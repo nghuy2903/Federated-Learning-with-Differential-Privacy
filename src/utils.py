@@ -19,22 +19,35 @@ def partition_data_non_iid(dataset, num_clients=3):
     Ví dụ: Client 0 nhận nhãn 0,1; Client 1 nhận nhãn 2,3...
     """
     # Lấy tất cả các nhãn trong tập dữ liệu
-    labels = np.array(dataset.targets)
-    indices = np.arange(len(labels))
+    if isinstance(dataset, Subset):
+        # Lấy toàn bộ nhãn từ dataset gốc
+        full_dataset_targets = np.array(dataset.dataset.targets)
+        # Chỉ lấy nhãn của những vị trí nằm trong Subset
+        labels = full_dataset_targets[dataset.indices]
+        indices = np.array(dataset.indices)
+    else:
+        # Nếu là Dataset gốc (MNIST)
+        labels = np.array(dataset.targets)
+        indices = np.arange(len(labels))
     
-    # Sắp xếp các chỉ số theo nhãn (000...111...222...)
+    # Sắp xếp chỉ số dựa trên nhãn
+    # Lưu ý: Sắp xếp các chỉ số THỰC TẾ của dataset
     sorted_indices = indices[np.argsort(labels)]
     
-    # Chia mảng chỉ số đã sắp xếp thành num_clients phần
-    # Việc chia này đảm bảo mỗi phần sẽ chứa các nhãn liên tiếp nhau
     partition_size = len(sorted_indices) // num_clients
     partitions = []
     
     for i in range(num_clients):
         start_idx = i * partition_size
         end_idx = (i + 1) * partition_size if i != num_clients - 1 else len(sorted_indices)
+        
+        # Lấy các chỉ số con đã sắp xếp
         subset_indices = sorted_indices[start_idx:end_idx]
-        partitions.append(Subset(dataset, subset_indices))
+        
+        # Nếu dataset đầu vào đã là Subset, ta phải lấy dataset gốc của nó 
+        # để tránh việc lồng Subset vào Subset nhiều lần
+        actual_dataset = dataset.dataset if isinstance(dataset, Subset) else dataset
+        partitions.append(Subset(actual_dataset, subset_indices))
         
     return partitions
 
