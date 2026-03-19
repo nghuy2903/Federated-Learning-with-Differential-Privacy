@@ -5,7 +5,7 @@ from datetime import datetime
 
 # (Giữ nguyên hàm weighted_average của lượt trước ở đây)
 def weighted_average(metrics):
-    accuracies = [num_examples * m["accuracy"] for num_examples, m in metrics]
+    accuracies = [num_examples * m.get("accuracy", 0) for num_examples, m in metrics]
     epsilons = [num_examples * m.get("epsilon", 0) for num_examples, m in metrics]
     examples = [num_examples for num_examples, _ in metrics]
     return {
@@ -20,6 +20,7 @@ def main():
         min_fit_clients=2,     # Đợi ít nhất 2 client mới bắt đầu huấn luyện
         min_available_clients=2, # Đợi ít nhất 2 client có mặt trên mạng
         evaluate_metrics_aggregation_fn=weighted_average,
+        fit_metrics_aggregation_fn=weighted_average,
     )
 
     # Khởi chạy Flower Server   
@@ -36,9 +37,12 @@ def main():
     if not os.path.exists('results'):
         os.makedirs('results')
 
+    eps_history = history.metrics_distributed_fit.get("avg_epsilon", [])
+    acc_history = history.metrics_distributed.get("accuracy", [])
+
     results_data = {
-        "history_accuracy": [acc for _, acc in history.metrics_distributed["accuracy"]],
-        "history_epsilon": [eps for _, eps in history.metrics_distributed["avg_epsilon"]],
+        "history_accuracy": [acc for _, acc in acc_history],
+        "history_epsilon": [eps for _, eps in eps_history],
         "history_loss": [loss for _, loss in history.losses_distributed]
     }
 

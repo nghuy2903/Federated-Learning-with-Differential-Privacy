@@ -19,7 +19,7 @@ class MNISTClient(fl.client.NumPyClient):
             module=self.model,
             optimizer=self.optimizer,
             data_loader=self.train_loader,
-            target_epsilon=10.0,
+            target_epsilon=2.0,
             target_delta=1e-5,
             epochs=3,
             max_grad_norm=1.0,
@@ -42,7 +42,7 @@ class MNISTClient(fl.client.NumPyClient):
             self.optimizer.step()
         
         epsilon = self.privacy_engine.get_epsilon(delta=1e-5)
-        return self.get_parameters(config), len(self.train_loader.dataset), {"epsilon": epsilon}
+        return self.get_parameters(config), len(self.train_loader.dataset), {"epsilon": float(epsilon)}
 
     def evaluate(self, parameters, config):
         # Tương tự như fit, cập nhật lại tham số trước khi eval
@@ -62,4 +62,25 @@ class MNISTClient(fl.client.NumPyClient):
                 correct += (predicted == labels).sum().item()
         
         accuracy = correct / total
-        return float(loss) / len(self.train_loader), total, {"accuracy": float(accuracy)}
+        epsilon = self.privacy_engine.get_epsilon(delta=1e-5)
+        return float(loss) / len(self.train_loader), total, {"accuracy": float(accuracy), "epsilon": float(epsilon)}
+
+if __name__ == "__main__":
+    # 1. Lấy ID từ dòng lệnh (mặc định là 0 nếu không nhập)
+    cid = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    
+    # 2. Cấu hình thiết bị (CPU/GPU) - Tôi để CPU cho ổn định như bạn đã test
+    device = torch.device("cpu")
+    
+    # 3. Chuẩn bị dữ liệu cho Client này
+    train_data, _ = get_mnist_data()
+    # Chia Non-IID thành 2 phần (cho client 0 và client 1)
+    all_partitions = partition_data_non_iid(train_data, num_clients=2)
+    client_train_data = all_partitions[cid]
+    train_loader = get_dataloader(client_train_data, batch_size=32)
+    
+    # 4. Khởi tạo và chạy Client
+    client = MNISTClient(client_id=cid, train_loader=train_loader, device=device)
+    
+    print(f"--- ĐANG KHỞI CHẠY CLIENT {cid} ---")
+    fl.client.start_numpy_client(server_address="127.0.0.1:8080", client=client)
