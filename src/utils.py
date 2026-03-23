@@ -2,6 +2,7 @@ import torch
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset, random_split
 import numpy as np
+from collections import Counter
 
 def get_mnist_data():
     """Tải bộ dữ liệu MNIST và chuẩn hóa."""
@@ -58,10 +59,34 @@ def get_dataloader(dataset, batch_size=32, shuffle=True):
 # Kiểm tra nhanh file utils.py
 if __name__ == "__main__":
     train_data, _ = get_mnist_data()
-    clients_data = partition_data_non_iid(train_data, num_clients=3)
+    
+    # Chia thử cho 2 client giống như bạn đang cấu hình trong mô phỏng
+    num_clients_test = 2
+    clients_data = partition_data_non_iid(train_data, num_clients=num_clients_test)
+    
+    print("\n" + "="*50)
+    print("KIỂM TRA PHÂN BỐ DỮ LIỆU NON-IID")
+    print("="*50)
     
     for i, data in enumerate(clients_data):
-        print(f"Client {i} có {len(data)} mẫu dữ liệu.")
-        # Kiểm tra thử nhãn của một vài mẫu đầu tiên để xem tính Non-IID
-        sample_labels = [data[j][1] for j in range(10)]
-        print(f"Nhãn mẫu của Client {i}: {sample_labels}")
+        print(f"\n--- Client {i} có tổng cộng {len(data)} mẫu dữ liệu ---")
+        
+        # Duyệt qua toàn bộ tập dữ liệu của Client này để lấy nhãn (label)
+        # Quá trình này có thể mất 1-2 giây
+        all_labels = [label for _, label in data]
+        
+        # Đếm số lượng của từng nhãn
+        label_counts = Counter(all_labels)
+        
+        # Sắp xếp lại dictionary theo thứ tự nhãn (0, 1, 2... 9) cho dễ nhìn
+        sorted_counts = dict(sorted(label_counts.items()))
+        
+        # In ra kết quả
+        print(f"-> Số lượng nhãn khác nhau: {len(sorted_counts)} nhãn")
+        print(f"-> Phân bố chi tiết (Nhãn: Số lượng):")
+        
+        # In đẹp từng dòng
+        for label, count in sorted_counts.items():
+            print(f"   + Nhãn {label}: {count} ảnh")
+            
+    print("\n" + "="*50)

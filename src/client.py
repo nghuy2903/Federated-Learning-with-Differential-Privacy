@@ -19,7 +19,7 @@ class MNISTClient(fl.client.NumPyClient):
             module=self.model,
             optimizer=self.optimizer,
             data_loader=self.train_loader,
-            target_epsilon=2.0,
+            target_epsilon=5.0,
             target_delta=1e-5,
             epochs=3,
             max_grad_norm=1.0,
