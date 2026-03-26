@@ -1,7 +1,10 @@
 import flwr as fl
 import json
 import os
+import torch
 from datetime import datetime
+from collections import OrderedDict
+from model import Net
 
 # (Giữ nguyên hàm weighted_average của lượt trước ở đây)
 def weighted_average(metrics):
@@ -23,6 +26,33 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
         self.strikes = 0          # Đếm số vòng dậm chân tại chỗ
         self.stop_training = False # Cờ hiệu dừng hệ thống
 
+    def aggregate_fit(self, server_round, results, failures):
+        # 1. Gọi hàm gốc để lấy bộ trọng số đã được trung bình cộng từ các Client
+        aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, results, failures)
+        
+        # 2. Tiến hành lưu file nếu quá trình gom thành công
+        if aggregated_parameters is not None:
+            print(f"[*] Đang trích xuất và lưu Global Model vòng {server_round}...")
+            
+            # Chuyển đổi định dạng byte của Flower sang mảng NumPy
+            ndarrays = fl.common.parameters_to_ndarrays(aggregated_parameters)
+            
+            # Khởi tạo một vỏ mô hình rỗng
+            model = Net()
+            
+            # Ghép trọng số NumPy vào cấu trúc của PyTorch
+            params_dict = zip(model.state_dict().keys(), ndarrays)
+            state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
+            model.load_state_dict(state_dict, strict=True)
+            
+            # Đảm bảo thư mục results tồn tại và lưu mô hình
+            if not os.path.exists('results'):
+                os.makedirs('results')
+            save_path = "results/global_model_latest.pth"
+            torch.save(model.state_dict(), save_path)
+            
+        return aggregated_parameters, aggregated_metrics
+    
     def aggregate_evaluate(self, server_round, results, failures):
         # Tính toán kết quả vòng hiện tại
         loss, metrics = super().aggregate_evaluate(server_round, results, failures)
@@ -74,7 +104,7 @@ def main():
     print("--- SERVER KHỞI ĐỘNG: TỐI ĐA 20 VÒNG + EARLY STOPPING ---")
     history = fl.server.start_server(
         server_address="127.0.0.1:8080",
-        config=fl.server.ServerConfig(num_rounds=20),
+        config=fl.server.ServerConfig(num_rounds=3), #Thay số vòng bằng 3 để lưu model
         strategy=strategy,
     )
 
