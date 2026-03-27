@@ -19,11 +19,11 @@ Môi trường Conda: fl_dp_env.
 [x] Thiết lập cấu trúc thư mục dự án.
 [x] Cài đặt môi trường Miniconda, PyTorch CUDA và các thư viện liên quan.
 🟡 Giai đoạn 2: Huấn luyện mô phỏng (Simulation) (Tuần 2-3 - Đang thực hiện)
-[ ] Viết mã nguồn cho model.py (CNN).
-[ ] Hoàn thiện utils.py để chia dữ liệu MNIST theo dạng Non-IID.
-[ ] Chạy thông luồng Federated Learning cơ bản (1 Server - 2 Clients giả lập).
-[ ] Tích hợp Opacus vào Client để thực hiện bảo mật DP-SGD.
-[ ] Kiểm chứng sự thay đổi của Accuracy khi thay đổi ngân sách riêng tư $\epsilon$.
+[x] Viết mã nguồn cho model.py (CNN).
+[x] Hoàn thiện utils.py để chia dữ liệu MNIST theo dạng Non-IID.
+[x] Chạy thông luồng Federated Learning cơ bản (1 Server - 2 Clients giả lập).
+[x] Tích hợp Opacus vào Client để thực hiện bảo mật DP-SGD.
+[x] Kiểm chứng sự thay đổi của Accuracy khi thay đổi ngân sách riêng tư $\epsilon$.
 ⚪ Giai đoạn 3: Triển khai hệ thống vật lý (Tuần 4)
 [ ] Cấu hình mạng LAN cho 4 máy tính.
 [ ] Đồng bộ hóa môi trường Python trên các máy thành viên.

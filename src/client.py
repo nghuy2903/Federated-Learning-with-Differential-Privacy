@@ -68,6 +68,10 @@ class MNISTClient(fl.client.NumPyClient):
 if __name__ == "__main__":
     # 1. Lấy ID từ dòng lệnh (mặc định là 0 nếu không nhập)
     cid = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+
+    # 1b. Lấy IP server từ dòng lệnh (mặc định localhost nếu không nhập)
+    server_ip = sys.argv[2] if len(sys.argv) > 2 else "127.0.0.1"
+    server_address = f"{server_ip}:8080"
     
     # 2. Cấu hình thiết bị (CPU/GPU) - Tôi để CPU cho ổn định như bạn đã test
     device = torch.device("cpu")
@@ -83,4 +87,11 @@ if __name__ == "__main__":
     client = MNISTClient(client_id=cid, train_loader=train_loader, device=device)
     
     print(f"--- ĐANG KHỞI CHẠY CLIENT {cid} ---")
-    fl.client.start_numpy_client(server_address="127.0.0.1:8080", client=client)
+    print(f"[*] Đang kết nối tới Server: {server_address}")
+    try:
+        fl.client.start_numpy_client(server_address=server_address, client=client)
+    except Exception as e:
+        print("[!] Không thể kết nối tới Server Flower.")
+        print(f"[!] Địa chỉ đã thử: {server_address}")
+        print("[!] Hãy kiểm tra lại IP Server (LAN IPv4) hoặc Firewall trên máy Server (cổng 8080).")
+        print(f"[!] Chi tiết lỗi: {e}")

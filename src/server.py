@@ -1,10 +1,23 @@
 import flwr as fl
 import json
 import os
+import socket
 import torch
 from datetime import datetime
 from collections import OrderedDict
 from model import Net
+
+# In ra IPv4 LAN để client dễ nhập đúng IP server
+def get_lan_ipv4() -> str:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # Không cần kết nối thực sự; chỉ để OS chọn interface LAN phù hợp
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
 
 # (Giữ nguyên hàm weighted_average của lượt trước ở đây)
 def weighted_average(metrics):
@@ -102,8 +115,10 @@ def main():
 
     # 4. CHẠY SERVER VỚI TỐI ĐA 20 VÒNG
     print("--- SERVER KHỞI ĐỘNG: TỐI ĐA 20 VÒNG + EARLY STOPPING ---")
+    print(f"[*] LAN IPv4 của Server: {get_lan_ipv4()}")
+    print("[*] Server đang lắng nghe trên 0.0.0.0:8080 (LAN/Wi-Fi).")
     history = fl.server.start_server(
-        server_address="127.0.0.1:8080",
+        server_address="0.0.0.0:8080",
         config=fl.server.ServerConfig(num_rounds=3), #Thay số vòng bằng 3 để lưu model
         strategy=strategy,
     )
