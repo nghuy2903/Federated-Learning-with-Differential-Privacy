@@ -1,6 +1,9 @@
 import flwr as fl
+import json
+import os
 import torch
 import sys
+from datetime import datetime
 from model import Net
 from utils import get_mnist_data, partition_data_non_iid, get_dataloader
 from opacus import PrivacyEngine
@@ -28,18 +31,49 @@ class MNISTClient(fl.client.NumPyClient):
     def get_parameters(self, config):
         return [val.cpu().numpy() for _, val in self.model.state_dict().items()]
 
+    def _save_parameter_inspector_sample(self, weights_clean, weights_noisy):
+        if not os.path.exists("results"):
+            os.makedirs("results")
+
+        sample_payload = {
+            "client_id": int(self.client_id),
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "layer_name": "fc2.weight",
+            "weights_clean": [float(v) for v in weights_clean],
+            "weights_noisy": [float(v) for v in weights_noisy],
+        }
+
+        output_path = f"results/parameter_inspector_client_{self.client_id}.json"
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(sample_payload, f, indent=4)
+
     def fit(self, parameters, config):
         params_dict = zip(self.model.state_dict().keys(), parameters)
         state_dict = {k: torch.tensor(v).to(self.device) for k, v in params_dict}
         self.model.load_state_dict(state_dict, strict=True)
 
         self.model.train()
+        inspector_clean_sample = None
+        inspector_noisy_sample = None
+
         for images, labels in self.train_loader:
             images, labels = images.to(self.device), labels.to(self.device)
             self.optimizer.zero_grad()
             loss = torch.nn.functional.nll_loss(self.model(images), labels)
             loss.backward()
+
+            # Lấy bản sao "clean/reference" trước bước cập nhật có DP noise
+            fc2_weight_before = self.model.state_dict()["fc2.weight"].detach().cpu().flatten()
             self.optimizer.step()
+
+            # Trọng số thực tế sau cập nhật (đã chịu tác động của DP)
+            fc2_weight_after = self.model.state_dict()["fc2.weight"].detach().cpu().flatten()
+
+            inspector_clean_sample = fc2_weight_before[:100].tolist()
+            inspector_noisy_sample = fc2_weight_after[:100].tolist()
+
+        if inspector_clean_sample is not None and inspector_noisy_sample is not None:
+            self._save_parameter_inspector_sample(inspector_clean_sample, inspector_noisy_sample)
         
         epsilon = self.privacy_engine.get_epsilon(delta=1e-5)
         return self.get_parameters(config), len(self.train_loader.dataset), {"epsilon": float(epsilon)}

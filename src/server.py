@@ -49,6 +49,37 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
             
             # Chuyển đổi định dạng byte của Flower sang mảng NumPy
             ndarrays = fl.common.parameters_to_ndarrays(aggregated_parameters)
+
+            # Lưu snapshot tham số để minh họa cơ chế giảm nhiễu sau aggregate
+            model_keys = list(Net().state_dict().keys())
+            if "fc2.weight" in model_keys:
+                fc2_idx = model_keys.index("fc2.weight")
+                aggregated_fc2_sample = ndarrays[fc2_idx].reshape(-1)[:100].tolist()
+                client_fc2_samples = []
+
+                for client_proxy, fit_res in results:
+                    client_ndarrays = fl.common.parameters_to_ndarrays(fit_res.parameters)
+                    client_fc2_sample = client_ndarrays[fc2_idx].reshape(-1)[:100].tolist()
+                    client_fc2_samples.append(
+                        {
+                            "client_id": str(client_proxy.cid),
+                            "weights_noisy": [float(v) for v in client_fc2_sample],
+                        }
+                    )
+
+                if not os.path.exists("results"):
+                    os.makedirs("results")
+
+                inspector_payload = {
+                    "server_round": int(server_round),
+                    "layer_name": "fc2.weight",
+                    "client_samples_noisy": client_fc2_samples,
+                    "aggregated_sample": [float(v) for v in aggregated_fc2_sample],
+                }
+
+                inspector_path = f"results/parameter_inspector_server_round_{server_round}.json"
+                with open(inspector_path, "w", encoding="utf-8") as f:
+                    json.dump(inspector_payload, f, indent=4)
             
             # Khởi tạo một vỏ mô hình rỗng
             model = Net()
