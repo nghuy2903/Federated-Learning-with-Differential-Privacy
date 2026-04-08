@@ -3,6 +3,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset, random_split
 import numpy as np
 from collections import Counter
+import os
 
 def get_mnist_data():
     """Tải bộ dữ liệu MNIST và chuẩn hóa."""
@@ -56,37 +57,32 @@ def get_dataloader(dataset, batch_size=32, shuffle=True):
     """Tạo DataLoader cho một tập dữ liệu con."""
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
 
+def save_client_data(partitions, folder_path="./client_data"):
+    """Lưu từng partition của client ra file .pt"""
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+    
+    for i, subset in enumerate(partitions):
+        file_path = os.path.join(folder_path, f"client_{i}_data.pt")
+        # Lưu Subset (bao gồm indices và references tới dataset gốc)
+        torch.save(subset, file_path)
+        print(f"Đã lưu dữ liệu Client {i} tại: {file_path}")
+
 # Kiểm tra nhanh file utils.py
 if __name__ == "__main__":
+    # 1. Tải dữ liệu
     train_data, _ = get_mnist_data()
     
-    # Chia thử cho 2 client giống như bạn đang cấu hình trong mô phỏng
-    num_clients_test = 2
-    clients_data = partition_data_non_iid(train_data, num_clients=num_clients_test)
+    # 2. Chia làm 4 client cho nghiên cứu của bạn
+    num_clients_research = 4
+    clients_data = partition_data_non_iid(train_data, num_clients=num_clients_research)
     
-    print("\n" + "="*50)
-    print("KIỂM TRA PHÂN BỐ DỮ LIỆU NON-IID")
-    print("="*50)
-    
+    print(f"\n=== KIỂM TRA CHIA 4 CLIENT ===")
     for i, data in enumerate(clients_data):
-        print(f"\n--- Client {i} có tổng cộng {len(data)} mẫu dữ liệu ---")
-        
-        # Duyệt qua toàn bộ tập dữ liệu của Client này để lấy nhãn (label)
-        # Quá trình này có thể mất 1-2 giây
-        all_labels = [label for _, label in data]
-        
-        # Đếm số lượng của từng nhãn
-        label_counts = Counter(all_labels)
-        
-        # Sắp xếp lại dictionary theo thứ tự nhãn (0, 1, 2... 9) cho dễ nhìn
-        sorted_counts = dict(sorted(label_counts.items()))
-        
-        # In ra kết quả
-        print(f"-> Số lượng nhãn khác nhau: {len(sorted_counts)} nhãn")
-        print(f"-> Phân bố chi tiết (Nhãn: Số lượng):")
-        
-        # In đẹp từng dòng
-        for label, count in sorted_counts.items():
-            print(f"   + Nhãn {label}: {count} ảnh")
-            
-    print("\n" + "="*50)
+        # Kiểm tra nhanh các nhãn có trong client
+        labels_in_client = [label for _, label in data]
+        counts = Counter(labels_in_client)
+        print(f"Client {i}: Nhãn xuất hiện {list(sorted(counts.keys()))} - Tổng: {len(data)} mẫu")
+
+    # 3. Lưu ra file
+    save_client_data(clients_data)
