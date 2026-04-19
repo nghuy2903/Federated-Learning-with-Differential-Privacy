@@ -48,9 +48,9 @@ class MNISTClient(fl.client.NumPyClient):
             json.dump(sample_payload, f, indent=4)
 
     def fit(self, parameters, config):
-        params_dict = zip(self.model.state_dict().keys(), parameters)
-        state_dict = {k: torch.tensor(v).to(self.device) for k, v in params_dict}
-        self.model.load_state_dict(state_dict, strict=True)
+        params_dict = zip(self.model.parameters(), parameters)
+        for p, v in params_dict:
+            p.data = torch.from_numpy(v).to(self.device)
 
         self.model.train()
         inspector_clean_sample = None
@@ -62,19 +62,35 @@ class MNISTClient(fl.client.NumPyClient):
             loss = torch.nn.functional.nll_loss(self.model(images), labels)
             loss.backward()
 
-            # Lấy bản sao "clean/reference" trước bước cập nhật có DP noise
-            fc2_weight_before = self.model.state_dict()["fc2.weight"].detach().cpu().flatten()
+            # # Lấy bản sao "clean/reference" trước bước cập nhật có DP noise
+            # fc2_weight_before = self.model.state_dict()["fc2.weight"].detach().cpu().flatten()
+            # self.optimizer.step()
+
+            # # Trọng số thực tế sau cập nhật (đã chịu tác động của DP)
+            # fc2_weight_after = self.model.state_dict()["fc2.weight"].detach().cpu().flatten()
+            # Tự động tìm lớp fc2 dù có bị Opacus wrap hay không
+            target_layer = self.model._module.fc2 if hasattr(self.model, "_module") else self.model.fc2
+
+            # Lấy trọng số trước khi cập nhật
+            fc2_weight_before = target_layer.weight.data.detach().cpu().flatten()
+
             self.optimizer.step()
 
-            # Trọng số thực tế sau cập nhật (đã chịu tác động của DP)
-            fc2_weight_after = self.model.state_dict()["fc2.weight"].detach().cpu().flatten()
+            # Lấy trọng số sau khi cập nhật (đã có nhiễu DP)
+            fc2_weight_after = target_layer.weight.data.detach().cpu().flatten()
 
             inspector_clean_sample = fc2_weight_before[:100].tolist()
             inspector_noisy_sample = fc2_weight_after[:100].tolist()
 
-        if inspector_clean_sample is not None and inspector_noisy_sample is not None:
-            self._save_parameter_inspector_sample(inspector_clean_sample, inspector_noisy_sample)
+        # if inspector_clean_sample is not None and inspector_noisy_sample is not None:
+        #     self._save_parameter_inspector_sample(inspector_clean_sample, inspector_noisy_sample)
         
+        
+        if inspector_clean_sample is not None and inspector_noisy_sample is not None:
+            try:
+                self._save_parameter_inspector_sample(inspector_clean_sample, inspector_noisy_sample)
+            except Exception as e:
+                print(f"[!] Cảnh báo Inspector: {e}") # Chỉ hiện cảnh báo, không làm sập Client
         epsilon = self.privacy_engine.get_epsilon(delta=1e-5)
         return self.get_parameters(config), len(self.train_loader.dataset), {"epsilon": float(epsilon)}
 
