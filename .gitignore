@@ -1,0 +1,8 @@
+client_data/client_*_data.pt
+
+results/*.json
+results/*.png
+results/*.pth
+
+__pycache__
+*.pyc
