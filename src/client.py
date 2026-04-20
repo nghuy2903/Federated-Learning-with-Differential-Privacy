@@ -127,11 +127,26 @@ if __name__ == "__main__":
     device = torch.device("cpu")
     
     # 3. Chuẩn bị dữ liệu cho Client này
-    train_data, _ = get_mnist_data()
-    # Chia Non-IID thành 2 phần (cho client 0 và client 1)
-    all_partitions = partition_data_non_iid(train_data, num_clients=2)
-    client_train_data = all_partitions[cid]
-    train_loader = get_dataloader(client_train_data, batch_size=32)
+    data_path = f"client_data/client_{cid}_data.pt"
+    
+    if not os.path.exists(data_path):
+        print(f"[!] Lỗi: Không tìm thấy file dữ liệu tại {data_path}")
+        sys.exit(1)
+
+    try:
+        # Nạp đối tượng Subset hoặc Dataset từ file .pt
+        client_train_data = torch.load(data_path, weights_only=False)
+        
+        # Tạo DataLoader từ dữ liệu đã nạp
+        # Lưu ý: get_dataloader là hàm bạn đã định nghĩa trong utils.py
+        train_loader = get_dataloader(client_train_data, batch_size=32)
+        
+        print(f"[*] Đã nạp thành công dữ liệu từ: {data_path}")
+        print(f"[*] Số lượng mẫu huấn luyện: {len(client_train_data)}")
+        
+    except Exception as e:
+        print(f"[!] Lỗi khi nạp dữ liệu: {e}")
+        sys.exit(1)
     
     # 4. Khởi tạo và chạy Client
     client = MNISTClient(client_id=cid, train_loader=train_loader, device=device)
