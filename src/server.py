@@ -138,8 +138,8 @@ def main():
     strategy = EarlyStoppingFedAvg(
         patience=3, # Nếu 3 vòng liên tiếp accuracy không tăng -> Dừng
         fraction_fit=1.0,
-        min_fit_clients=2,
-        min_available_clients=2,
+        min_fit_clients=1,
+        min_available_clients=1,
         fit_metrics_aggregation_fn=weighted_average,
         evaluate_metrics_aggregation_fn=weighted_average,
     )

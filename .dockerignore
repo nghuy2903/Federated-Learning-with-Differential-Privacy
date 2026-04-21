@@ -1,0 +1,9 @@
+# .dockerignore
+__pycache__/
+*.pyc
+venv/
+.env
+.git
+client_data/
+results/
+*.pt
