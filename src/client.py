@@ -5,7 +5,7 @@ import torch
 import sys
 from datetime import datetime
 from model import Net
-from utils import get_mnist_data, partition_data_non_iid, get_dataloader
+from utils import get_dataloader
 from opacus import PrivacyEngine
 
 class MNISTClient(fl.client.NumPyClient):
@@ -119,15 +119,17 @@ if __name__ == "__main__":
     # 1. Lấy ID từ dòng lệnh (mặc định là 0 nếu không nhập)
     cid = int(sys.argv[1]) if len(sys.argv) > 1 else 0
 
-    # 1b. Lấy IP server từ dòng lệnh (mặc định localhost nếu không nhập)
-    server_ip = sys.argv[2] if len(sys.argv) > 2 else "127.0.0.1"
+    # 1b. Lấy server host từ dòng lệnh (mặc định fl_server cho Docker Compose)
+    server_ip = sys.argv[2] if len(sys.argv) > 2 else "fl_server"
     server_address = f"{server_ip}:8080"
     
     # 2. Cấu hình thiết bị (CPU/GPU) - Tôi để CPU cho ổn định như bạn đã test
     device = torch.device("cpu")
     
-    # 3. Chuẩn bị dữ liệu cho Client này
-    data_path = f"client_data/client_{cid}_data.pt"
+    # 3. Chuẩn bị dữ liệu cho Client này (ưu tiên mount path trong Docker)
+    docker_data_path = f"/app/client_data/client_{cid}_data.pt"
+    local_data_path = f"client_data/client_{cid}_data.pt"
+    data_path = docker_data_path if os.path.exists(docker_data_path) else local_data_path
     
     if not os.path.exists(data_path):
         print(f"[!] Lỗi: Không tìm thấy file dữ liệu tại {data_path}")
@@ -158,5 +160,5 @@ if __name__ == "__main__":
     except Exception as e:
         print("[!] Không thể kết nối tới Server Flower.")
         print(f"[!] Địa chỉ đã thử: {server_address}")
-        print("[!] Hãy kiểm tra lại IP Server (LAN IPv4) hoặc Firewall trên máy Server (cổng 8080).")
+        print("[!] Hãy kiểm tra lại server host/IP hoặc Firewall trên máy Server (cổng 8080).")
         print(f"[!] Chi tiết lỗi: {e}")

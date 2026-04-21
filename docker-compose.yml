@@ -1,0 +1,64 @@
+version: "3.9"
+
+services:
+  fl_server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fl_server
+    command: python src/server.py
+    ports:
+      - "8080:8080"
+      - "8501:8501"
+    volumes:
+      - ./client_data:/app/client_data
+      - ./results:/app/results
+
+  client0:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fl_client0
+    command: python src/client.py 0 fl_server
+    depends_on:
+      - fl_server
+    volumes:
+      - ./client_data:/app/client_data
+      - ./results:/app/results
+
+  client1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fl_client1
+    command: python src/client.py 1 fl_server
+    depends_on:
+      - fl_server
+    volumes:
+      - ./client_data:/app/client_data
+      - ./results:/app/results
+
+  client2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fl_client2
+    command: python src/client.py 2 fl_server
+    depends_on:
+      - fl_server
+    volumes:
+      - ./client_data:/app/client_data
+      - ./results:/app/results
+
+  client3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fl_client3
+    command: python src/client.py 3 fl_server
+    depends_on:
+      - fl_server
+    volumes:
+      - ./client_data:/app/client_data
+      - ./results:/app/results
+
