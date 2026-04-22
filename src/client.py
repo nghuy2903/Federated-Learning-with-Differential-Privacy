@@ -31,23 +31,42 @@ class MNISTClient(fl.client.NumPyClient):
     def get_parameters(self, config):
         return [val.cpu().numpy() for _, val in self.model.state_dict().items()]
 
-    def _save_parameter_inspector_sample(self, weights_clean, weights_noisy):
+    @staticmethod
+    def _extract_server_round(config) -> int:
+        round_value = config.get("server_round", config.get("round", 0))
+        try:
+            return int(round_value)
+        except (TypeError, ValueError):
+            return 0
+
+    def _save_parameter_inspector_sample(
+        self,
+        server_round,
+        weights_clean,
+        weights_noisy,
+        local_accuracy,
+        local_loss,
+    ):
         if not os.path.exists("results"):
             os.makedirs("results")
 
         sample_payload = {
             "client_id": int(self.client_id),
+            "server_round": int(server_round),
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "layer_name": "fc2.weight",
+            "history_accuracy": [float(local_accuracy)],
+            "history_loss": [float(local_loss)],
             "weights_clean": [float(v) for v in weights_clean],
             "weights_noisy": [float(v) for v in weights_noisy],
         }
 
-        output_path = f"results/parameter_inspector_client_{self.client_id}.json"
+        output_path = f"results/client_{self.client_id}_round_{server_round}.json"
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(sample_payload, f, indent=4)
 
     def fit(self, parameters, config):
+        server_round = self._extract_server_round(config)
         params_dict = zip(self.model.parameters(), parameters)
         for p, v in params_dict:
             p.data = torch.from_numpy(v).to(self.device)
@@ -55,12 +74,20 @@ class MNISTClient(fl.client.NumPyClient):
         self.model.train()
         inspector_clean_sample = None
         inspector_noisy_sample = None
+        correct_predictions = 0
+        total_samples = 0
+        total_loss = 0.0
 
         for images, labels in self.train_loader:
             images, labels = images.to(self.device), labels.to(self.device)
             self.optimizer.zero_grad()
-            loss = torch.nn.functional.nll_loss(self.model(images), labels)
+            outputs = self.model(images)
+            loss = torch.nn.functional.nll_loss(outputs, labels)
             loss.backward()
+            total_loss += float(loss.item())
+            predicted = torch.max(outputs.data, 1)[1]
+            total_samples += labels.size(0)
+            correct_predictions += (predicted == labels).sum().item()
 
             # # Lấy bản sao "clean/reference" trước bước cập nhật có DP noise
             # fc2_weight_before = self.model.state_dict()["fc2.weight"].detach().cpu().flatten()
@@ -84,11 +111,19 @@ class MNISTClient(fl.client.NumPyClient):
 
         # if inspector_clean_sample is not None and inspector_noisy_sample is not None:
         #     self._save_parameter_inspector_sample(inspector_clean_sample, inspector_noisy_sample)
-        
-        
+
+        local_loss = total_loss / len(self.train_loader) if len(self.train_loader) > 0 else 0.0
+        local_accuracy = (correct_predictions / total_samples) if total_samples > 0 else 0.0
+
         if inspector_clean_sample is not None and inspector_noisy_sample is not None:
             try:
-                self._save_parameter_inspector_sample(inspector_clean_sample, inspector_noisy_sample)
+                self._save_parameter_inspector_sample(
+                    server_round=server_round,
+                    weights_clean=inspector_clean_sample,
+                    weights_noisy=inspector_noisy_sample,
+                    local_accuracy=local_accuracy,
+                    local_loss=local_loss,
+                )
             except Exception as e:
                 print(f"[!] Cảnh báo Inspector: {e}") # Chỉ hiện cảnh báo, không làm sập Client
         epsilon = self.privacy_engine.get_epsilon(delta=1e-5)
@@ -123,7 +158,7 @@ if __name__ == "__main__":
     server_ip = sys.argv[2] if len(sys.argv) > 2 else "fl_server"
     server_address = f"{server_ip}:8080"
     
-    # 2. Cấu hình thiết bị (CPU/GPU) - Tôi để CPU cho ổn định như bạn đã test
+    # 2. Cấu hình thiết bị (CPU/GPU)
     device = torch.device("cpu")
     
     # 3. Chuẩn bị dữ liệu cho Client này (ưu tiên mount path trong Docker)
