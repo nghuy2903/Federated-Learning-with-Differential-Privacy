@@ -5,6 +5,7 @@ import socket
 import torch
 from datetime import datetime
 from collections import OrderedDict
+from typing import Optional
 from model import Net
 
 # In ra IPv4 LAN để client dễ nhập đúng IP server
@@ -38,6 +39,37 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
         self.best_acc = 0.0       # Lưu độ chính xác cao nhất
         self.strikes = 0          # Đếm số vòng dậm chân tại chỗ
         self.stop_training = False # Cờ hiệu dừng hệ thống
+
+    @staticmethod
+    def _get_inspector_path(server_round: int) -> str:
+        return f"results/parameter_inspector_server_round_{server_round}.json"
+
+    @staticmethod
+    def _update_round_history_fields(
+        server_round: int,
+        accuracy: float,
+        loss: float,
+        epsilon: Optional[float],
+    ) -> None:
+        if not os.path.exists("results"):
+            os.makedirs("results")
+
+        inspector_path = EarlyStoppingFedAvg._get_inspector_path(server_round)
+        payload = {}
+        if os.path.exists(inspector_path):
+            try:
+                with open(inspector_path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                payload = {}
+
+        payload["server_round"] = int(server_round)
+        payload["history_accuracy"] = [float(accuracy)]
+        payload["history_loss"] = [float(loss)]
+        payload["history_epsilon"] = [] if epsilon is None else [float(epsilon)]
+
+        with open(inspector_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=4)
 
     def aggregate_fit(self, server_round, results, failures):
         # 1. Gọi hàm gốc để lấy bộ trọng số đã được trung bình cộng từ các Client
@@ -75,9 +107,13 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
                     "layer_name": "fc2.weight",
                     "client_samples_noisy": client_fc2_samples,
                     "aggregated_sample": [float(v) for v in aggregated_fc2_sample],
+                    # Các trường history sẽ được cập nhật sau evaluate của chính vòng này.
+                    "history_accuracy": [],
+                    "history_loss": [],
+                    "history_epsilon": [],
                 }
 
-                inspector_path = f"results/parameter_inspector_server_round_{server_round}.json"
+                inspector_path = self._get_inspector_path(server_round)
                 with open(inspector_path, "w", encoding="utf-8") as f:
                     json.dump(inspector_payload, f, indent=4)
             
@@ -94,17 +130,28 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
                 os.makedirs('results')
             save_path = "results/global_model_latest.pth"
             torch.save(model.state_dict(), save_path)
+            torch.save(model.state_dict(), "results/model.pt")
             
         return aggregated_parameters, aggregated_metrics
     
     def aggregate_evaluate(self, server_round, results, failures):
         # Tính toán kết quả vòng hiện tại
         loss, metrics = super().aggregate_evaluate(server_round, results, failures)
-        
-        if metrics and "accuracy" in metrics:
-            acc = metrics["accuracy"]
-            eps = metrics.get('avg_epsilon', 0)
-            print(f"\n---> [Vòng {server_round}] Độ chính xác: {acc:.4f} | Tiêu thụ Epsilon: {eps:.4f} <---")
+
+        if metrics and "accuracy" in metrics and loss is not None:
+            acc = float(metrics["accuracy"])
+            eps_raw = metrics.get("avg_epsilon")
+            eps = None if eps_raw is None else float(eps_raw)
+            eps_text = f"{eps:.4f}" if eps is not None else "N/A"
+            print(f"\n---> [Vòng {server_round}] Độ chính xác: {acc:.4f} | Tiêu thụ Epsilon: {eps_text} <---")
+
+            # Ghi bổ sung lịch sử của vòng vào file JSON round tương ứng.
+            self._update_round_history_fields(
+                server_round=server_round,
+                accuracy=acc,
+                loss=float(loss),
+                epsilon=eps,
+            )
             
             # Kiểm tra xem mô hình có cải thiện ít nhất 0.1% (0.001) hay không
             if acc > self.best_acc + 0.001:
@@ -138,8 +185,9 @@ def main():
     strategy = EarlyStoppingFedAvg(
         patience=3, # Nếu 3 vòng liên tiếp accuracy không tăng -> Dừng
         fraction_fit=1.0,
-        min_fit_clients=1,
-        min_available_clients=1,
+        min_fit_clients=2,
+        min_available_clients=2,
+        min_evaluate_clients=2,
         fit_metrics_aggregation_fn=weighted_average,
         evaluate_metrics_aggregation_fn=weighted_average,
     )
@@ -150,7 +198,7 @@ def main():
     print("[*] Server đang lắng nghe trên 0.0.0.0:8080 (LAN/Wi-Fi).")
     history = fl.server.start_server(
         server_address="0.0.0.0:8080",
-        config=fl.server.ServerConfig(num_rounds=3), #Thay số vòng bằng 3 để lưu model
+        config=fl.server.ServerConfig(num_rounds=20), #Thay số vòng bằng 3 để lưu model
         strategy=strategy,
     )
 
