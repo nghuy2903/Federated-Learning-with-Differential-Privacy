@@ -130,7 +130,6 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
                 os.makedirs('results')
             save_path = "results/global_model_latest.pth"
             torch.save(model.state_dict(), save_path)
-            torch.save(model.state_dict(), "results/model.pt")
             
         return aggregated_parameters, aggregated_metrics
     
