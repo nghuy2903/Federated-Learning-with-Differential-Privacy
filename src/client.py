@@ -39,31 +39,14 @@ class MNISTClient(fl.client.NumPyClient):
         except (TypeError, ValueError):
             return 0
 
-    def _save_parameter_inspector_sample(
-        self,
-        server_round,
-        weights_clean,
-        weights_noisy,
-        local_accuracy,
-        local_loss,
-    ):
+    @staticmethod
+    def _ensure_results_dir() -> None:
         if not os.path.exists("results"):
             os.makedirs("results")
 
-        sample_payload = {
-            "client_id": int(self.client_id),
-            "server_round": int(server_round),
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "layer_name": "fc2.weight",
-            "history_accuracy": [float(local_accuracy)],
-            "history_loss": [float(local_loss)],
-            "weights_clean": [float(v) for v in weights_clean],
-            "weights_noisy": [float(v) for v in weights_noisy],
-        }
-
-        output_path = f"results/client_{self.client_id}_round_{server_round}.json"
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(sample_payload, f, indent=4)
+    def _save_latest_global_model(self) -> None:
+        self._ensure_results_dir()
+        torch.save(self.model.state_dict(), "results/global_model_latest.pth")
     
     @staticmethod
     def _build_parameter_inspector_payload(
@@ -90,6 +73,8 @@ class MNISTClient(fl.client.NumPyClient):
         params_dict = zip(self.model.parameters(), parameters)
         for p, v in params_dict:
             p.data = torch.from_numpy(v).to(self.device)
+        # Lưu snapshot global model vừa nhận để dashboard luôn có checkpoint mới nhất.
+        self._save_latest_global_model()
 
         self.model.train()
         inspector_clean_sample = None
@@ -145,16 +130,6 @@ class MNISTClient(fl.client.NumPyClient):
                 local_accuracy=local_accuracy,
                 local_loss=local_loss,
             )
-            try:
-                self._save_parameter_inspector_sample(
-                    server_round=server_round,
-                    weights_clean=inspector_clean_sample,
-                    weights_noisy=inspector_noisy_sample,
-                    local_accuracy=local_accuracy,
-                    local_loss=local_loss,
-                )
-            except Exception as e:
-                print(f"[!] Cảnh báo Inspector: {e}") # Chỉ hiện cảnh báo, không làm sập Client
         epsilon = self.privacy_engine.get_epsilon(delta=1e-5)
         fit_metrics = {"epsilon": float(epsilon)}
         if inspector_payload is not None:
@@ -168,9 +143,7 @@ class MNISTClient(fl.client.NumPyClient):
         self.model.load_state_dict(state_dict, strict=True)
 
         # Lưu global model mới nhất để Dashboard có thể suy luận ngay trên client.
-        if not os.path.exists("results"):
-            os.makedirs("results")
-        torch.save(self.model.state_dict(), "results/global_model_latest.pth")
+        self._save_latest_global_model()
         
         self.model.eval()
         correct, total, loss = 0, 0, 0.0

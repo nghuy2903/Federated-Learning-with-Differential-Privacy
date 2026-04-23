@@ -41,6 +41,11 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
         self.stop_training = False # Cờ hiệu dừng hệ thống
 
     @staticmethod
+    def _ensure_results_dir() -> None:
+        if not os.path.exists("results"):
+            os.makedirs("results")
+
+    @staticmethod
     def _get_inspector_path(server_round: int) -> str:
         return f"results/parameter_inspector_server_round_{server_round}.json"
 
@@ -51,8 +56,7 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
         loss: float,
         epsilon: Optional[float],
     ) -> None:
-        if not os.path.exists("results"):
-            os.makedirs("results")
+        EarlyStoppingFedAvg._ensure_results_dir()
 
         inspector_path = EarlyStoppingFedAvg._get_inspector_path(server_round)
         payload = {}
@@ -73,8 +77,7 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
 
     @staticmethod
     def _save_client_metric_payloads(server_round: int, results) -> None:
-        if not os.path.exists("results"):
-            os.makedirs("results")
+        EarlyStoppingFedAvg._ensure_results_dir()
 
         for client_proxy, fit_res in results:
             metrics = fit_res.metrics if fit_res.metrics is not None else {}
@@ -84,6 +87,8 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
 
             try:
                 payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+                if not isinstance(payload, dict):
+                    raise TypeError("Inspector payload khong phai JSON object hop le")
                 client_id = str(payload.get("client_id", client_proxy.cid))
                 output_path = f"results/client_{client_id}_round_{server_round}.json"
                 with open(output_path, "w", encoding="utf-8") as f:
@@ -129,8 +134,7 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
                         }
                     )
 
-                if not os.path.exists("results"):
-                    os.makedirs("results")
+                self._ensure_results_dir()
 
                 inspector_payload = {
                     "server_round": int(server_round),
@@ -156,8 +160,7 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
             model.load_state_dict(state_dict, strict=True)
             
             # Đảm bảo thư mục results tồn tại và lưu mô hình
-            if not os.path.exists('results'):
-                os.makedirs('results')
+            self._ensure_results_dir()
             save_path = "results/global_model_latest.pth"
             torch.save(model.state_dict(), save_path)
             

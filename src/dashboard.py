@@ -129,9 +129,20 @@ def load_mnist_test_dataset() -> datasets.MNIST:
 
 def render_live_inference_section() -> None:
     st.subheader("🚀 Kiểm chứng Mô hình (Inference)")
-    st.write("Nhấn nút để chạy suy luận với 1 ảnh MNIST ngẫu nhiên từ tập test.")
+    st.write("Chọn chữ số (0-9) để kiểm tra mô hình trên một ảnh MNIST tương ứng.")
 
-    if not st.button("Dự đoán ảnh MNIST ngẫu nhiên", use_container_width=True):
+    if "selected_inference_digit" not in st.session_state:
+        st.session_state["selected_inference_digit"] = None
+    st.markdown("**Chọn nhãn muốn kiểm tra**")
+    for row_start in (0, 5):
+        row_cols = st.columns(5)
+        for col_idx, digit in enumerate(range(row_start, row_start + 5)):
+            with row_cols[col_idx]:
+                if st.button(f"{digit}", key=f"infer_digit_{digit}", use_container_width=True):
+                    st.session_state["selected_inference_digit"] = digit
+    selected_digit = st.session_state["selected_inference_digit"]
+    if selected_digit is None:
+        st.info("Vui lòng chọn một chữ số để bắt đầu suy luận.")
         return
 
     model_path = RESULTS_DIR / "global_model_latest.pth"
@@ -157,7 +168,11 @@ def render_live_inference_section() -> None:
         st.error("Tap MNIST test rong, khong the suy luan.")
         return
 
-    sample_index = random.randint(0, len(mnist_test) - 1)
+    label_indices = [idx for idx, target in enumerate(mnist_test.targets) if int(target) == selected_digit]
+    if not label_indices:
+        st.error(f"Khong tim thay anh nao co nhan `{selected_digit}` trong tap test.")
+        return
+    sample_index = random.choice(label_indices)
     image_tensor, label = mnist_test[sample_index]
 
     with torch.no_grad():
@@ -167,12 +182,30 @@ def render_live_inference_section() -> None:
 
     st.image(
         image_tensor.squeeze(0).numpy(),
-        caption=f"Anh test MNIST ngau nhien (label that: {label})",
+        caption=f"Ảnh MNIST với nhãn đã chọn: {selected_digit}",
         use_container_width=False,
         clamp=True,
     )
-    st.success(f"AI du doan day la so: **{int(prediction.item())}**")
-    st.info(f"Do tu tin (Probability): **{float(confidence.item()):.2%}**")
+    prediction_digit = int(prediction.item())
+    confidence_percent = float(confidence.item()) * 100.0
+
+    st.markdown(f"### Kết quả dự đoán: **{prediction_digit}** (Độ tự tin: **{confidence_percent:.2f}%**)")
+    if prediction_digit == selected_digit:
+        st.success("Dự đoán CHÍNH XÁC so với nhãn đã chọn.")
+    else:
+        st.warning(
+            "Dự đoán KHÔNG KHỚP với nhãn đã chọn. Điều này có thể xảy ra khi mô hình còn sai số hoặc bị ảnh hưởng bởi nhiễu DP."
+        )
+
+    st.markdown("**Phân phối xác suất cho các lớp 0-9**")
+    probability_values = probabilities.squeeze(0).detach().cpu().tolist()
+    probability_df = pd.DataFrame(
+        {
+            "Digit": [str(i) for i in range(10)],
+            "Probability": probability_values,
+        }
+    ).set_index("Digit")
+    st.bar_chart(probability_df)
 
 
 def find_parameter_inspector_files(results_dir: Path) -> List[Path]:
@@ -308,7 +341,7 @@ def main() -> None:
 
     st.sidebar.header("Data & Simulation Controls")
     st.sidebar.markdown("### 🚀 Kiểm chứng Mô hình (Inference)")
-    st.sidebar.caption("Mo tab Inference de du doan anh MNIST ngau nhien.")
+    st.sidebar.caption("Mở tab Inference để chọn nhãn và kiểm tra dự đoán trên ảnh MNIST tương ứng.")
 
     df = build_history_dataframe(RESULTS_DIR)
 
