@@ -64,6 +64,26 @@ class MNISTClient(fl.client.NumPyClient):
         output_path = f"results/client_{self.client_id}_round_{server_round}.json"
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(sample_payload, f, indent=4)
+    
+    @staticmethod
+    def _build_parameter_inspector_payload(
+        client_id,
+        server_round,
+        weights_clean,
+        weights_noisy,
+        local_accuracy,
+        local_loss,
+    ):
+        return {
+            "client_id": int(client_id),
+            "server_round": int(server_round),
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "layer_name": "fc2.weight",
+            "history_accuracy": [float(local_accuracy)],
+            "history_loss": [float(local_loss)],
+            "weights_clean": [float(v) for v in weights_clean],
+            "weights_noisy": [float(v) for v in weights_noisy],
+        }
 
     def fit(self, parameters, config):
         server_round = self._extract_server_round(config)
@@ -115,7 +135,16 @@ class MNISTClient(fl.client.NumPyClient):
         local_loss = total_loss / len(self.train_loader) if len(self.train_loader) > 0 else 0.0
         local_accuracy = (correct_predictions / total_samples) if total_samples > 0 else 0.0
 
+        inspector_payload = None
         if inspector_clean_sample is not None and inspector_noisy_sample is not None:
+            inspector_payload = self._build_parameter_inspector_payload(
+                client_id=self.client_id,
+                server_round=server_round,
+                weights_clean=inspector_clean_sample,
+                weights_noisy=inspector_noisy_sample,
+                local_accuracy=local_accuracy,
+                local_loss=local_loss,
+            )
             try:
                 self._save_parameter_inspector_sample(
                     server_round=server_round,
@@ -127,13 +156,21 @@ class MNISTClient(fl.client.NumPyClient):
             except Exception as e:
                 print(f"[!] Cảnh báo Inspector: {e}") # Chỉ hiện cảnh báo, không làm sập Client
         epsilon = self.privacy_engine.get_epsilon(delta=1e-5)
-        return self.get_parameters(config), len(self.train_loader.dataset), {"epsilon": float(epsilon)}
+        fit_metrics = {"epsilon": float(epsilon)}
+        if inspector_payload is not None:
+            fit_metrics["parameter_inspector_payload"] = json.dumps(inspector_payload)
+        return self.get_parameters(config), len(self.train_loader.dataset), fit_metrics
 
     def evaluate(self, parameters, config):
         # Tương tự như fit, cập nhật lại tham số trước khi eval
         params_dict = zip(self.model.state_dict().keys(), parameters)
         state_dict = {k: torch.tensor(v).to(self.device) for k, v in params_dict}
         self.model.load_state_dict(state_dict, strict=True)
+
+        # Lưu global model mới nhất để Dashboard có thể suy luận ngay trên client.
+        if not os.path.exists("results"):
+            os.makedirs("results")
+        torch.save(self.model.state_dict(), "results/global_model_latest.pth")
         
         self.model.eval()
         correct, total, loss = 0, 0, 0.0
