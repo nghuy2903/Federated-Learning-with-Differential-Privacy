@@ -41,12 +41,22 @@ class MNISTClient(fl.client.NumPyClient):
 
     @staticmethod
     def _ensure_results_dir() -> None:
-        if not os.path.exists("results"):
-            os.makedirs("results")
+        results_dir = os.path.join("results")
+        if not os.path.exists(results_dir):
+            os.makedirs(results_dir)
 
     def _save_latest_global_model(self) -> None:
         self._ensure_results_dir()
-        torch.save(self.model.state_dict(), "results/global_model_latest.pth")
+        model_path = os.path.join("results", "global_model_latest.pth")
+        torch.save(self.model.state_dict(), model_path)
+
+    def _save_local_parameter_inspector_file(self, payload: dict) -> str:
+        self._ensure_results_dir()
+        local_filename = f"parameter_inspector_client_{self.client_id}.json"
+        local_path = os.path.join("results", local_filename)
+        with open(local_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=4)
+        return local_path
     
     @staticmethod
     def _build_parameter_inspector_payload(
@@ -133,7 +143,10 @@ class MNISTClient(fl.client.NumPyClient):
         epsilon = self.privacy_engine.get_epsilon(delta=1e-5)
         fit_metrics = {"epsilon": float(epsilon)}
         if inspector_payload is not None:
-            fit_metrics["parameter_inspector_payload"] = json.dumps(inspector_payload)
+            local_json_path = self._save_local_parameter_inspector_file(inspector_payload)
+            # Đọc lại từ file local để đảm bảo dữ liệu gửi server đúng với bản đã lưu.
+            with open(local_json_path, "r", encoding="utf-8") as f:
+                fit_metrics["parameter_inspector_payload"] = f.read()
         return self.get_parameters(config), len(self.train_loader.dataset), fit_metrics
 
     def evaluate(self, parameters, config):
@@ -144,6 +157,19 @@ class MNISTClient(fl.client.NumPyClient):
 
         # Lưu global model mới nhất để Dashboard có thể suy luận ngay trên client.
         self._save_latest_global_model()
+
+        # Lưu lịch sử global do server broadcast, không chứa dữ liệu riêng tư của client khác.
+        global_history = config.get("global_history")
+        if isinstance(global_history, str):
+            try:
+                parsed_history = json.loads(global_history)
+            except json.JSONDecodeError:
+                parsed_history = None
+            if isinstance(parsed_history, dict):
+                self._ensure_results_dir()
+                history_path = os.path.join("results", "experiment_global_history.json")
+                with open(history_path, "w", encoding="utf-8") as f:
+                    json.dump(parsed_history, f, indent=4)
         
         self.model.eval()
         correct, total, loss = 0, 0, 0.0

@@ -34,6 +34,10 @@ def weighted_average(metrics):
     }
 class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
     def __init__(self, patience=3, *args, **kwargs):
+        self.global_history_accuracy = []
+        self.global_history_loss = []
+        self.global_history_epsilon = []
+        kwargs["on_evaluate_config_fn"] = self._build_evaluate_config
         super().__init__(*args, **kwargs)
         self.patience = patience  # Số vòng "chịu đựng" tối đa nếu không cải thiện
         self.best_acc = 0.0       # Lưu độ chính xác cao nhất
@@ -42,12 +46,25 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
 
     @staticmethod
     def _ensure_results_dir() -> None:
-        if not os.path.exists("results"):
-            os.makedirs("results")
+        results_dir = os.path.join("results")
+        if not os.path.exists(results_dir):
+            os.makedirs(results_dir)
 
     @staticmethod
     def _get_inspector_path(server_round: int) -> str:
-        return f"results/parameter_inspector_server_round_{server_round}.json"
+        return os.path.join("results", f"parameter_inspector_server_round_{server_round}.json")
+
+    def _build_evaluate_config(self, server_round: int) -> dict:
+        global_history_payload = {
+            "server_round": int(server_round),
+            "history_accuracy": [float(v) for v in self.global_history_accuracy],
+            "history_loss": [float(v) for v in self.global_history_loss],
+            "history_epsilon": [float(v) for v in self.global_history_epsilon],
+        }
+        return {
+            "server_round": int(server_round),
+            "global_history": json.dumps(global_history_payload),
+        }
 
     @staticmethod
     def _update_round_history_fields(
@@ -90,7 +107,7 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
                 if not isinstance(payload, dict):
                     raise TypeError("Inspector payload khong phai JSON object hop le")
                 client_id = str(payload.get("client_id", client_proxy.cid))
-                output_path = f"results/client_{client_id}_round_{server_round}.json"
+                output_path = os.path.join("results", f"client_{client_id}_round_{server_round}.json")
                 with open(output_path, "w", encoding="utf-8") as f:
                     json.dump(payload, f, indent=4)
             except (TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
@@ -161,7 +178,7 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
             
             # Đảm bảo thư mục results tồn tại và lưu mô hình
             self._ensure_results_dir()
-            save_path = "results/global_model_latest.pth"
+            save_path = os.path.join("results", "global_model_latest.pth")
             torch.save(model.state_dict(), save_path)
             
         return aggregated_parameters, aggregated_metrics
@@ -187,6 +204,9 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
                 loss=float(loss),
                 epsilon=eps,
             )
+            self.global_history_accuracy.append(acc)
+            self.global_history_loss.append(float(loss))
+            self.global_history_epsilon.append(0.0 if eps is None else eps)
             
             # Kiểm tra xem mô hình có cải thiện ít nhất 0.1% (0.001) hay không
             if acc > self.best_acc + 0.001:
@@ -239,8 +259,8 @@ def main():
 
     # 5. Lưu kết quả
     print("\n--- ĐANG LƯU KẾT QUẢ HUẤN LUYỆN ---")
-    if not os.path.exists('results'):
-        os.makedirs('results')
+    if not os.path.exists(os.path.join("results")):
+        os.makedirs(os.path.join("results"))
 
     acc_history = history.metrics_distributed.get("accuracy", [])
     eps_history = history.metrics_distributed_fit.get("avg_epsilon", [])
@@ -251,7 +271,7 @@ def main():
     }
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"results/experiment_20rounds_{timestamp}.json"
+    filename = os.path.join("results", f"experiment_20rounds_{timestamp}.json")
     
     with open(filename, "w") as f:
         json.dump(results_data, f, indent=4)

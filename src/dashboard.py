@@ -1,7 +1,8 @@
 import json
+import os
 import random
-from pathlib import Path
-from typing import Dict, List, Optional
+import re
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -13,32 +14,42 @@ from torchvision import datasets, transforms
 from model import Net
 
 
-RESULTS_DIR = Path("results")
 ROUND_FILE_PATTERN = "parameter_inspector_server_round_*.json"
+RESULTS_DIR = os.path.join("results")
+ROUND_FILE_REGEX = re.compile(r"^parameter_inspector_server_round_(\d+)\.json$")
+SERVER_CLIENT_FILE_REGEX = re.compile(r"^client_(.+)_round_(\d+)\.json$")
 
 
-def find_result_files(results_dir: Path) -> List[Path]:
-    if not results_dir.exists():
+def ensure_results_dir(results_dir: str) -> None:
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+
+
+def load_json_file(file_path: str) -> Dict:
+    with open(file_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def find_result_files(results_dir: str) -> List[str]:
+    if not os.path.exists(results_dir):
         return []
-    return list(results_dir.glob(ROUND_FILE_PATTERN))
+    result_files: List[str] = []
+    for filename in os.listdir(results_dir):
+        if ROUND_FILE_REGEX.match(filename):
+            result_files.append(os.path.join(results_dir, filename))
+    return result_files
 
 
-def extract_round_number(json_path: Path) -> Optional[int]:
-    stem = json_path.stem
-    prefix = "parameter_inspector_server_round_"
-    if not stem.startswith(prefix):
+def extract_round_number(file_path: str) -> Optional[int]:
+    matched = ROUND_FILE_REGEX.match(os.path.basename(file_path))
+    if matched is None:
         return None
-    suffix = stem[len(prefix):]
-    try:
-        round_number = int(suffix)
-    except ValueError:
-        return None
+    round_number = int(matched.group(1))
     return round_number if round_number > 0 else None
 
 
-def load_round_metrics(json_path: Path) -> Dict[str, Optional[float]]:
-    with json_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
+def load_round_metrics(file_path: str) -> Dict[str, Optional[float]]:
+    data = load_json_file(file_path)
 
     def pick_metric(metric_key: str, round_number: int) -> Optional[float]:
         if metric_key not in data:
@@ -53,7 +64,7 @@ def load_round_metrics(json_path: Path) -> Dict[str, Optional[float]]:
             return float(metric_value[-1])
         return float(metric_value)
 
-    round_number = extract_round_number(json_path)
+    round_number = extract_round_number(file_path)
     if round_number is None:
         raise ValueError("Khong trich xuat duoc so round tu ten file.")
 
@@ -70,22 +81,22 @@ def load_round_metrics(json_path: Path) -> Dict[str, Optional[float]]:
         "epsilon": epsilon,
     }
 
-def build_history_dataframe(results_dir: Path) -> pd.DataFrame:
+def build_server_history_dataframe(results_dir: str) -> pd.DataFrame:
     rows: List[Dict[str, Optional[float]]] = []
     files = find_result_files(results_dir)
 
     if not files:
         return pd.DataFrame()
 
-    for json_path in files:
-        round_number = extract_round_number(json_path)
+    for file_path in files:
+        round_number = extract_round_number(file_path)
         if round_number is None:
             continue
 
         try:
-            metrics = load_round_metrics(json_path)
+            metrics = load_round_metrics(file_path)
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            st.warning(f"Bo qua file loi `{json_path.name}`: {exc}")
+            st.warning(f"Bo qua file loi `{os.path.basename(file_path)}`: {exc}")
             continue
 
         rows.append(
@@ -108,8 +119,41 @@ def build_history_dataframe(results_dir: Path) -> pd.DataFrame:
     return df
 
 
+def build_client_history_dataframe(results_dir: str) -> pd.DataFrame:
+    history_path = os.path.join(results_dir, "experiment_global_history.json")
+    if not os.path.exists(history_path):
+        return pd.DataFrame()
+
+    try:
+        history_payload = load_json_file(history_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        st.warning(f"Khong the doc `experiment_global_history.json`: {exc}")
+        return pd.DataFrame()
+
+    accuracy_history = history_payload.get("history_accuracy", [])
+    loss_history = history_payload.get("history_loss", [])
+    epsilon_history = history_payload.get("history_epsilon", [])
+    max_len = max(len(accuracy_history), len(loss_history), len(epsilon_history), 0)
+    if max_len == 0:
+        return pd.DataFrame()
+
+    rows = []
+    for idx in range(max_len):
+        rows.append(
+            {
+                "Round": idx + 1,
+                "Accuracy": float(accuracy_history[idx]) if idx < len(accuracy_history) else 0.0,
+                "Loss": float(loss_history[idx]) if idx < len(loss_history) else 0.0,
+                "EpsilonPerRound": float(epsilon_history[idx]) if idx < len(epsilon_history) else 0.0,
+            }
+        )
+    df = pd.DataFrame(rows)
+    df["CumulativeEpsilon"] = df["EpsilonPerRound"].cumsum()
+    return df
+
+
 @st.cache_resource(show_spinner=False)
-def load_global_model(model_path: Path) -> Net:
+def load_global_model(model_path: str) -> Net:
     model = Net()
     state_dict = torch.load(model_path, map_location=torch.device("cpu"))
     model.load_state_dict(state_dict)
@@ -145,8 +189,8 @@ def render_live_inference_section() -> None:
         st.info("Vui lòng chọn một chữ số để bắt đầu suy luận.")
         return
 
-    model_path = RESULTS_DIR / "global_model_latest.pth"
-    if not model_path.exists():
+    model_path = os.path.join(RESULTS_DIR, "global_model_latest.pth")
+    if not os.path.exists(model_path):
         st.error("Khong tim thay model global moi nhat tai `results/global_model_latest.pth`.")
         return
 
@@ -208,19 +252,37 @@ def render_live_inference_section() -> None:
     st.bar_chart(probability_df)
 
 
-def find_parameter_inspector_files(results_dir: Path) -> List[Path]:
-    if not results_dir.exists():
+def detect_dashboard_mode(results_dir: str) -> str:
+    client_history_path = os.path.join(results_dir, "experiment_global_history.json")
+    if os.path.exists(client_history_path):
+        return "client"
+    return "server"
+
+
+def find_server_client_payload_files(results_dir: str) -> List[str]:
+    if not os.path.exists(results_dir):
         return []
-    return sorted(
-        results_dir.glob("parameter_inspector_client_*.json"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    paths: List[str] = []
+    for filename in os.listdir(results_dir):
+        if SERVER_CLIENT_FILE_REGEX.match(filename):
+            paths.append(os.path.join(results_dir, filename))
+    paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return paths
 
 
-def load_parameter_inspector_data(json_path: Path) -> Dict[str, List[float]]:
-    with json_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
+def find_local_client_payload_files(results_dir: str) -> List[str]:
+    if not os.path.exists(results_dir):
+        return []
+    paths: List[str] = []
+    for filename in os.listdir(results_dir):
+        if filename.startswith("parameter_inspector_client_") and filename.endswith(".json"):
+            paths.append(os.path.join(results_dir, filename))
+    paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return paths
+
+
+def load_parameter_inspector_data(file_path: str) -> Dict[str, List[float]]:
+    data = load_json_file(file_path)
 
     if "weights_clean" not in data or "weights_noisy" not in data:
         raise KeyError("File inspector thieu 'weights_clean' hoac 'weights_noisy'.")
@@ -242,21 +304,86 @@ def reshape_to_10x10(values: List[float]) -> List[List[float]]:
     return [values[i * 10:(i + 1) * 10] for i in range(10)]
 
 
-def render_dp_inspector_tab() -> None:
+def build_server_client_comparison_dataframe(file_paths: List[str]) -> pd.DataFrame:
+    rows: List[Dict[str, object]] = []
+    for file_path in file_paths:
+        file_name = os.path.basename(file_path)
+        matched = SERVER_CLIENT_FILE_REGEX.match(file_name)
+        if matched is None:
+            continue
+
+        fallback_client_id, round_text = matched.groups()
+        try:
+            payload = load_json_file(file_path)
+            clean_weights = payload.get("weights_clean", [])
+            noisy_weights = payload.get("weights_noisy", [])
+            pair_count = min(len(clean_weights), len(noisy_weights))
+            avg_abs_noise = 0.0
+            if pair_count > 0:
+                avg_abs_noise = sum(
+                    abs(float(noisy_weights[idx]) - float(clean_weights[idx]))
+                    for idx in range(pair_count)
+                ) / pair_count
+
+            rows.append(
+                {
+                    "ClientID": str(payload.get("client_id", fallback_client_id)),
+                    "Round": int(payload.get("server_round", int(round_text))),
+                    "AvgAbsNoise": float(avg_abs_noise),
+                    "LocalAccuracy": float(payload.get("history_accuracy", [0.0])[0]),
+                    "LocalLoss": float(payload.get("history_loss", [0.0])[0]),
+                }
+            )
+        except (OSError, json.JSONDecodeError, TypeError, ValueError, KeyError):
+            continue
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values(by=["Round", "ClientID"]).reset_index(drop=True)
+
+
+def render_dp_inspector_tab(runtime_mode: str) -> None:
     st.subheader("Cơ chế bảo mật DP")
-    inspector_files = find_parameter_inspector_files(RESULTS_DIR)
+
+    if runtime_mode == "server":
+        inspector_files = find_server_client_payload_files(RESULTS_DIR)
+        if not inspector_files:
+            st.info("Chua co file `client_{id}_round_{round}.json` trong `results/`.")
+            return
+
+        comparison_df = build_server_client_comparison_dataframe(inspector_files)
+        if not comparison_df.empty:
+            st.markdown("**So sánh Client theo Round (Server View)**")
+            st.dataframe(comparison_df, use_container_width=True)
+            chart_df = comparison_df.groupby("ClientID", as_index=True)["AvgAbsNoise"].mean().to_frame()
+            st.markdown("**Average |Noisy - Clean| theo Client**")
+            st.bar_chart(chart_df)
+        else:
+            st.warning("Khong the tao bang so sanh tu file client payload.")
+
+        selected_inspector = st.selectbox(
+            "Chon file payload client tren server",
+            options=inspector_files,
+            format_func=lambda p: os.path.basename(p),
+        )
+    else:
+        inspector_files = find_local_client_payload_files(RESULTS_DIR)
+        if not inspector_files:
+            st.info("Chua co file local `parameter_inspector_client_*.json`.")
+            return
+
+        selected_inspector = st.selectbox(
+            "Chon file Parameter Inspector local",
+            options=inspector_files,
+            format_func=lambda p: os.path.basename(p),
+        )
+
     if not inspector_files:
         st.info(
             "Chua co file Parameter Inspector. "
             "Hay chay client de tao `results/parameter_inspector_client_*.json`."
         )
         return
-
-    selected_inspector = st.selectbox(
-        "Chon file Parameter Inspector",
-        options=inspector_files,
-        format_func=lambda p: p.name,
-    )
 
     try:
         inspector_data = load_parameter_inspector_data(selected_inspector)
@@ -331,6 +458,7 @@ def render_dp_inspector_tab() -> None:
 
 
 def main() -> None:
+    ensure_results_dir(RESULTS_DIR)
     st.set_page_config(
         page_title="Federated Learning & Differential Privacy Dashboard",
         layout="wide",
@@ -342,8 +470,10 @@ def main() -> None:
     st.sidebar.header("Data & Simulation Controls")
     st.sidebar.markdown("### 🚀 Kiểm chứng Mô hình (Inference)")
     st.sidebar.caption("Mở tab Inference để chọn nhãn và kiểm tra dự đoán trên ảnh MNIST tương ứng.")
+    runtime_mode = detect_dashboard_mode(RESULTS_DIR)
+    st.sidebar.caption(f"Mode: {'Client View' if runtime_mode == 'client' else 'Server View'}")
 
-    df = build_history_dataframe(RESULTS_DIR)
+    df = build_client_history_dataframe(RESULTS_DIR) if runtime_mode == "client" else build_server_history_dataframe(RESULTS_DIR)
 
     try:
         total_rounds = int(df["Round"].max()) if not df.empty else 0
@@ -385,7 +515,7 @@ def main() -> None:
         if current_round == 0:
             st.warning(
                 "Khong tim thay du lieu history hop le trong `results/` "
-                f"voi pattern `{ROUND_FILE_PATTERN}`."
+                f"voi pattern `{ROUND_FILE_PATTERN}` hoac `experiment_global_history.json`."
             )
         else:
             col1, col2, col3, col4 = st.columns(4)
@@ -418,7 +548,7 @@ def main() -> None:
             )
 
     with dp_tab:
-        render_dp_inspector_tab()
+        render_dp_inspector_tab(runtime_mode=runtime_mode)
 
     with inference_tab:
         render_live_inference_section()
