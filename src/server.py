@@ -179,7 +179,8 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
             # Đảm bảo thư mục results tồn tại và lưu mô hình
             self._ensure_results_dir()
             save_path = os.path.join("results", "global_model_latest.pth")
-            torch.save(model.state_dict(), save_path)
+            model_to_save = model._module if hasattr(model, "_module") else model
+            torch.save(model_to_save.state_dict(), save_path)
             
         return aggregated_parameters, aggregated_metrics
     

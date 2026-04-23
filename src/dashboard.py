@@ -2,6 +2,7 @@ import json
 import os
 import random
 import re
+from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -155,8 +156,16 @@ def build_client_history_dataframe(results_dir: str) -> pd.DataFrame:
 @st.cache_resource(show_spinner=False)
 def load_global_model(model_path: str) -> Net:
     model = Net()
-    state_dict = torch.load(model_path, map_location=torch.device("cpu"))
-    model.load_state_dict(state_dict)
+    checkpoint = torch.load(model_path, map_location=torch.device("cpu"))
+
+    if any(key.startswith("_module.") for key in checkpoint.keys()):
+        cleaned_state_dict = OrderedDict(
+            (key.replace("_module.", "", 1), value) for key, value in checkpoint.items()
+        )
+    else:
+        cleaned_state_dict = checkpoint
+
+    model.load_state_dict(cleaned_state_dict)
     model.eval()
     return model
 
