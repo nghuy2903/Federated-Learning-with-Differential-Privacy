@@ -4,6 +4,8 @@ import random
 import re
 from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
+import plotly.graph_objects as go
+
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -19,6 +21,9 @@ ROUND_FILE_PATTERN = "parameter_inspector_server_round_*.json"
 RESULTS_DIR = os.path.join("results")
 ROUND_FILE_REGEX = re.compile(r"^parameter_inspector_server_round_(\d+)\.json$")
 SERVER_CLIENT_FILE_REGEX = re.compile(r"^client_(.+)_round_(\d+)\.json$")
+DP_EXPERIMENT_FILENAME = "experiment_20rounds_20260505_172719.json"
+NODP_EXPERIMENT_FILENAME = "experiment_nodp_last20rounds_20260505_184731.json"
+COMPARISON_ROUNDS = 20
 
 
 def ensure_results_dir(results_dir: str) -> None:
@@ -67,14 +72,14 @@ def load_round_metrics(file_path: str) -> Dict[str, Optional[float]]:
 
     round_number = extract_round_number(file_path)
     if round_number is None:
-        raise ValueError("Khong trich xuat duoc so round tu ten file.")
+        raise ValueError("Không trích xuất được số vòng từ file.")
 
     accuracy = pick_metric("history_accuracy", round_number)
     loss = pick_metric("history_loss", round_number)
     epsilon = pick_metric("history_epsilon", round_number)
 
     if accuracy is None or loss is None:
-        raise KeyError("File JSON thieu 'history_accuracy' hoac 'history_loss' hop le.")
+        raise KeyError("File JSON thiếu 'history_accuracy' hoặc 'history_loss' hợp lệ.")
 
     return {
         "accuracy": float(accuracy),
@@ -97,7 +102,7 @@ def build_server_history_dataframe(results_dir: str) -> pd.DataFrame:
         try:
             metrics = load_round_metrics(file_path)
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            st.warning(f"Bo qua file loi `{os.path.basename(file_path)}`: {exc}")
+            st.warning(f"Bỏ qua lỗi `{os.path.basename(file_path)}`: {exc}")
             continue
 
         rows.append(
@@ -105,7 +110,7 @@ def build_server_history_dataframe(results_dir: str) -> pd.DataFrame:
                 "Round": round_number,
                 "Accuracy": float(metrics["accuracy"]),
                 "Loss": float(metrics["loss"]),
-                "EpsilonPerRound": metrics["epsilon"],
+                "Epsilon": metrics["epsilon"],
             }
         )
 
@@ -114,9 +119,9 @@ def build_server_history_dataframe(results_dir: str) -> pd.DataFrame:
 
     df = pd.DataFrame(rows).sort_values(by="Round").reset_index(drop=True)
 
-    # Missing epsilon is treated as 0 to keep cumulative budget stable.
-    df["EpsilonPerRound"] = pd.to_numeric(df["EpsilonPerRound"], errors="coerce").fillna(0.0)
-    df["CumulativeEpsilon"] = df["EpsilonPerRound"].cumsum()
+    # Epsilon tu server/client da la gia tri tich luy den round hien tai,
+    # vi vay chi can hien thi truc tiep theo tung round.
+    df["Epsilon"] = pd.to_numeric(df["Epsilon"], errors="coerce").fillna(0.0)
     return df
 
 
@@ -128,7 +133,7 @@ def build_client_history_dataframe(results_dir: str) -> pd.DataFrame:
     try:
         history_payload = load_json_file(history_path)
     except (OSError, json.JSONDecodeError) as exc:
-        st.warning(f"Khong the doc `experiment_global_history.json`: {exc}")
+        st.warning(f"Không thể đọc `experiment_global_history.json`: {exc}")
         return pd.DataFrame()
 
     accuracy_history = history_payload.get("history_accuracy", [])
@@ -145,12 +150,134 @@ def build_client_history_dataframe(results_dir: str) -> pd.DataFrame:
                 "Round": idx + 1,
                 "Accuracy": float(accuracy_history[idx]) if idx < len(accuracy_history) else 0.0,
                 "Loss": float(loss_history[idx]) if idx < len(loss_history) else 0.0,
-                "EpsilonPerRound": float(epsilon_history[idx]) if idx < len(epsilon_history) else 0.0,
+                "Epsilon": float(epsilon_history[idx]) if idx < len(epsilon_history) else 0.0,
             }
         )
     df = pd.DataFrame(rows)
-    df["CumulativeEpsilon"] = df["EpsilonPerRound"].cumsum()
+    # epsilon_history la epsilon tich luy theo round -> khong cong don them.
+    df["Epsilon"] = pd.to_numeric(df["Epsilon"], errors="coerce").fillna(0.0)
     return df
+
+
+def _normalize_history_to_20_rounds(values: List[float], rounds: int = COMPARISON_ROUNDS) -> List[float]:
+    normalized = pd.to_numeric(pd.Series(values), errors="coerce").tolist()
+    normalized = [float(v) if pd.notna(v) else float("nan") for v in normalized][-rounds:]
+    if len(normalized) < rounds:
+        normalized = [float("nan")] * (rounds - len(normalized)) + normalized
+    return normalized
+
+
+def _load_experiment_metrics(file_path: str) -> Tuple[List[float], List[float], List[float]]:
+    payload = load_json_file(file_path)
+    accuracy = payload.get("history_accuracy", [])
+    loss = payload.get("history_loss", [])
+    epsilon = payload.get("history_epsilon", [])
+    return (
+        _normalize_history_to_20_rounds(accuracy),
+        _normalize_history_to_20_rounds(loss),
+        _normalize_history_to_20_rounds(epsilon),
+    )
+
+
+
+import os
+import json
+from typing import List
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+def render_dp_nodp_comparison_charts(results_dir: str) -> None:
+    dp_path = os.path.join(results_dir, DP_EXPERIMENT_FILENAME)
+    nodp_path = os.path.join(results_dir, NODP_EXPERIMENT_FILENAME)
+
+    missing_files: List[str] = []
+    if not os.path.exists(dp_path):
+        missing_files.append(DP_EXPERIMENT_FILENAME)
+    if not os.path.exists(nodp_path):
+        missing_files.append(NODP_EXPERIMENT_FILENAME)
+
+    if missing_files:
+        st.error(
+            "Không tìm thấy file kết quả cần so sánh trong `results/`: "
+            + ", ".join(f"`{name}`" for name in missing_files)
+        )
+        return
+
+    try:
+        dp_acc, dp_loss, dp_eps = _load_experiment_metrics(dp_path)
+        nodp_acc, nodp_loss, nodp_eps = _load_experiment_metrics(nodp_path)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        st.error(f"Không thể đọc file kết quả thực nghiệm: {exc}")
+        return
+
+    rounds = list(range(1, COMPARISON_ROUNDS + 1))
+
+    # --- 1. THAY THẾ THÀNH Ô CHỌN DUY NHẤT (SELECTBOX) ---
+    selected_metric = st.selectbox(
+        label="Chọn chỉ số muốn quan sát:",
+        options=["Accuracy", "Loss", "Privacy Budget"]
+    )
+
+    # --- 2. TỰ ĐỘNG GÁN DỮ LIỆU VÀ TIÊU ĐỀ THEO LỰA CHỌN ---
+    if selected_metric == "Accuracy":
+        y_dp = dp_acc
+        y_nodp = nodp_acc
+        title = "So sánh Accuracy"
+        ylabel = "Accuracy"
+    elif selected_metric == "Loss":
+        y_dp = dp_loss
+        y_nodp = nodp_loss
+        title = "So sánh Loss"
+        ylabel = "NLL Loss"
+    else:  # Privacy Budget
+        y_dp = dp_eps
+        y_nodp = nodp_eps
+        title = "So sánh Privacy Budget (Epsilon)"
+        ylabel = "Epsilon"
+
+    # Định dạng hover: hiển thị giá trị làm tròn 2 số thập phân (:.2f)
+    hover_template = "<b>Round:</b> %{x}<br><b>Giá trị:</b> %{y:.2f}<extra></extra>"
+
+    # --- 3. LOGIC VẼ MỘT BIỂU ĐỒ DUY NHẤT ---
+    fig = go.Figure()
+
+    # Đường biểu diễn dữ liệu có DP
+    fig.add_trace(
+        go.Scatter(
+            x=rounds,
+            y=y_dp,
+            name="DP",
+            line=dict(color="#1f77b4", width=2.5),
+            mode="lines+markers",
+            hovertemplate=hover_template,
+        )
+    )
+
+    # Đường biểu diễn dữ liệu không có DP (No-DP)
+    fig.add_trace(
+        go.Scatter(
+            x=rounds,
+            y=y_nodp,
+            name="No-DP",
+            line=dict(color="#d62728", width=2.5, dash="dash"),
+            mode="lines+markers",
+            hovertemplate=hover_template,
+        )
+    )
+
+    # Cấu hình giao diện biểu đồ
+    fig.update_layout(
+        title=f"<b>{title}</b>",
+        xaxis_title="Round",
+        yaxis_title=ylabel,
+        hovermode="x unified",  # Tạo đường kẻ dọc đồng bộ khi di chuột
+        margin=dict(l=40, r=40, t=50, b=40),
+        height=450,  # Tăng nhẹ chiều cao để biểu đồ đơn nhìn rõ ràng, đẹp mắt hơn
+    )
+
+    # Hiển thị biểu đồ lên Streamlit
+    st.plotly_chart(fig, use_container_width=True)
 
 
 @st.cache_resource(show_spinner=False)
@@ -181,8 +308,6 @@ def load_mnist_test_dataset() -> datasets.MNIST:
 
 
 def render_live_inference_section() -> None:
-    st.subheader("🚀 Kiểm chứng Mô hình (Inference)")
-    st.write("Chọn chữ số (0-9) để kiểm tra mô hình trên một ảnh MNIST tương ứng.")
 
     if "selected_inference_digit" not in st.session_state:
         st.session_state["selected_inference_digit"] = None
@@ -242,12 +367,12 @@ def render_live_inference_section() -> None:
     prediction_digit = int(prediction.item())
     confidence_percent = float(confidence.item()) * 100.0
 
-    st.markdown(f"### Kết quả dự đoán: **{prediction_digit}** (Độ tự tin: **{confidence_percent:.2f}%**)")
+    st.markdown(f"### Kết quả dự đoán: **{prediction_digit}** (Xác suất: **{confidence_percent:.2f}%**)")
     if prediction_digit == selected_digit:
         st.success("Dự đoán CHÍNH XÁC so với nhãn đã chọn.")
     else:
         st.warning(
-            "Dự đoán KHÔNG KHỚP với nhãn đã chọn. Điều này có thể xảy ra khi mô hình còn sai số hoặc bị ảnh hưởng bởi nhiễu DP."
+            "Dự đoán KHÔNG KHỚP với nhãn đã chọn."
         )
 
     st.markdown("**Phân phối xác suất cho các lớp 0-9**")
@@ -352,7 +477,6 @@ def build_server_client_comparison_dataframe(file_paths: List[str]) -> pd.DataFr
 
 
 def render_dp_inspector_tab(runtime_mode: str) -> None:
-    st.subheader("Cơ chế bảo mật DP")
 
     if runtime_mode == "server":
         inspector_files = find_server_client_payload_files(RESULTS_DIR)
@@ -382,7 +506,7 @@ def render_dp_inspector_tab(runtime_mode: str) -> None:
             return
 
         selected_inspector = st.selectbox(
-            "Chon file Parameter Inspector local",
+            "Chọn file Parameter Inspector local",
             options=inspector_files,
             format_func=lambda p: os.path.basename(p),
         )
@@ -404,13 +528,13 @@ def render_dp_inspector_tab(runtime_mode: str) -> None:
     noisy_matrix = reshape_to_10x10(inspector_data["weights_noisy"])
 
     st.write(
-        f"Layer minh hoa: `{inspector_data['layer_name']}` | "
+        f"Layer minh họa: `{inspector_data['layer_name']}` | "
         f"Client: `{inspector_data['client_id']}`"
     )
 
     col_left, col_right = st.columns(2)
     with col_left:
-        st.markdown("**Tham số gốc (Raw Parameters)**")
+        st.markdown("**Tham số gốc Raw Parameters**")
         fig_clean, ax_clean = plt.subplots(figsize=(5, 4))
         sns.heatmap(
             clean_matrix,
@@ -426,7 +550,7 @@ def render_dp_inspector_tab(runtime_mode: str) -> None:
         plt.close(fig_clean)
 
     with col_right:
-        st.markdown("**Tham số đã thêm nhiễu (DP Noisy Parameters)**")
+        st.markdown("**Tham số đã thêm nhiễu DP Noisy Parameters**")
         fig_noisy, ax_noisy = plt.subplots(figsize=(5, 4))
         sns.heatmap(
             noisy_matrix,
@@ -474,87 +598,18 @@ def main() -> None:
     )
 
     st.title("Federated Learning & Differential Privacy Dashboard")
-    st.caption("Real-time simulation for advisor meeting (FL + DP training history)")
 
     st.sidebar.header("Data & Simulation Controls")
-    st.sidebar.markdown("### 🚀 Kiểm chứng Mô hình (Inference)")
-    st.sidebar.caption("Mở tab Inference để chọn nhãn và kiểm tra dự đoán trên ảnh MNIST tương ứng.")
+    st.sidebar.caption("Mở tab kiểm chứng mô hình để chọn nhãn và kiểm tra dự đoán trên ảnh MNIST tương ứng.")
     runtime_mode = detect_dashboard_mode(RESULTS_DIR)
-    st.sidebar.caption(f"Mode: {'Client View' if runtime_mode == 'client' else 'Server View'}")
-
-    df = build_client_history_dataframe(RESULTS_DIR) if runtime_mode == "client" else build_server_history_dataframe(RESULTS_DIR)
-
-    try:
-        total_rounds = int(df["Round"].max()) if not df.empty else 0
-    except (ValueError, TypeError, KeyError):
-        total_rounds = 0
-
-    if total_rounds > 1:
-        current_round = st.sidebar.slider(
-            "Simulate Training Round",
-            min_value=1,
-            max_value=total_rounds,
-            value=total_rounds,
-            step=1,
-        )
-    elif total_rounds == 1:
-        st.sidebar.info("Showing Round 1")
-        current_round = 1
-    else:
-        current_round = 0
-
-    if current_round > 0:
-        current_idx = current_round - 1
-        df_current = df.iloc[:current_round].copy()
-
-        current_accuracy = float(df.iloc[current_idx]["Accuracy"])
-        current_loss = float(df.iloc[current_idx]["Loss"])
-        current_epsilon = float(df.iloc[current_idx]["CumulativeEpsilon"])
-    else:
-        df_current = pd.DataFrame()
-        current_accuracy = 0.0
-        current_loss = 0.0
-        current_epsilon = 0.0
 
     overview_tab, dp_tab, inference_tab = st.tabs(
-        ["Monitoring FL+DP", "Cơ chế bảo mật DP", "🚀 Kiểm chứng Mô hình (Inference)"]
+        ["Monitoring FL+DP", "Cơ chế bảo mật DP", " Kiểm chứng mô hình"]
     )
 
     with overview_tab:
-        if current_round == 0:
-            st.warning(
-                "Khong tim thay du lieu history hop le trong `results/` "
-                f"voi pattern `{ROUND_FILE_PATTERN}` hoac `experiment_global_history.json`."
-            )
-        else:
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Current Round", f"{current_round}")
-            col2.metric("Accuracy", f"{current_accuracy:.2%}")
-            col3.metric("Privacy Budget (Epsilon)", f"{current_epsilon:.4f}")
-            col4.metric("Global Loss", f"{current_loss:.6f}")
-
-            st.divider()
-
-            chart_col1, chart_col2 = st.columns(2)
-
-            with chart_col1:
-                st.subheader("Model Convergence")
-                st.line_chart(
-                    data=df_current.set_index("Round")[["Accuracy", "Loss"]],
-                    use_container_width=True,
-                )
-
-            with chart_col2:
-                st.subheader("Privacy Budget Consumption")
-                st.line_chart(
-                    data=df_current.set_index("Round")[["CumulativeEpsilon"]],
-                    use_container_width=True,
-                )
-
-            st.caption(
-                f"Displaying rounds 1 to {current_round} from files "
-                f"`{ROUND_FILE_PATTERN}` (max rounds available: {total_rounds})."
-            )
+        st.subheader("So sánh kết quả huấn luyện giữa DP vs No-DP")
+        render_dp_nodp_comparison_charts(RESULTS_DIR)
 
     with dp_tab:
         render_dp_inspector_tab(runtime_mode=runtime_mode)

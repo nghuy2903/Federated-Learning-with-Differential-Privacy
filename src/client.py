@@ -8,6 +8,8 @@ from model import Net
 from utils import get_dataloader
 from opacus import PrivacyEngine
 
+USE_DP = False
+
 class MNISTClient(fl.client.NumPyClient):
     def __init__(self, client_id, train_loader, device="cpu"):
         self.client_id = client_id
@@ -15,18 +17,20 @@ class MNISTClient(fl.client.NumPyClient):
         self.device = device
         self.model = Net().to(self.device)
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01)
-        
-        # Thiết lập Privacy Engine
-        self.privacy_engine = PrivacyEngine()
-        self.model, self.optimizer, self.train_loader = self.privacy_engine.make_private_with_epsilon(
-            module=self.model,
-            optimizer=self.optimizer,
-            data_loader=self.train_loader,
-            target_epsilon=5.0,
-            target_delta=1e-5,
-            epochs=3,
-            max_grad_norm=1.0,
-        )
+        self.privacy_engine = None
+
+        if USE_DP:
+            # Thiet lap Privacy Engine (giu nguyen cau hinh DP hien tai)
+            self.privacy_engine = PrivacyEngine()
+            self.model, self.optimizer, self.train_loader = self.privacy_engine.make_private_with_epsilon(
+                module=self.model,
+                optimizer=self.optimizer,
+                data_loader=self.train_loader,
+                target_epsilon=5.0,
+                target_delta=1e-5,
+                epochs=3,
+                max_grad_norm=1.0,
+            )
 
     def get_parameters(self, config):
         return [val.cpu().numpy() for _, val in self.model.state_dict().items()]
@@ -93,36 +97,42 @@ class MNISTClient(fl.client.NumPyClient):
         total_samples = 0
         total_loss = 0.0
 
-        for images, labels in self.train_loader:
-            images, labels = images.to(self.device), labels.to(self.device)
-            self.optimizer.zero_grad()
-            outputs = self.model(images)
-            loss = torch.nn.functional.nll_loss(outputs, labels)
-            loss.backward()
-            total_loss += float(loss.item())
-            predicted = torch.max(outputs.data, 1)[1]
-            total_samples += labels.size(0)
-            correct_predictions += (predicted == labels).sum().item()
+        if USE_DP:
+            for images, labels in self.train_loader:
+                images, labels = images.to(self.device), labels.to(self.device)
+                self.optimizer.zero_grad()
+                outputs = self.model(images)
+                loss = torch.nn.functional.nll_loss(outputs, labels)
+                loss.backward()
+                total_loss += float(loss.item())
+                predicted = torch.max(outputs.data, 1)[1]
+                total_samples += labels.size(0)
+                correct_predictions += (predicted == labels).sum().item()
 
-            # # Lấy bản sao "clean/reference" trước bước cập nhật có DP noise
-            # fc2_weight_before = self.model.state_dict()["fc2.weight"].detach().cpu().flatten()
-            # self.optimizer.step()
+                # Tu dong tim layer fc2 du co bi Opacus wrap hay khong
+                target_layer = self.model._module.fc2 if hasattr(self.model, "_module") else self.model.fc2
+                fc2_weight_before = target_layer.weight.data.detach().cpu().flatten()
 
-            # # Trọng số thực tế sau cập nhật (đã chịu tác động của DP)
-            # fc2_weight_after = self.model.state_dict()["fc2.weight"].detach().cpu().flatten()
-            # Tự động tìm lớp fc2 dù có bị Opacus wrap hay không
-            target_layer = self.model._module.fc2 if hasattr(self.model, "_module") else self.model.fc2
+                self.optimizer.step()
 
-            # Lấy trọng số trước khi cập nhật
-            fc2_weight_before = target_layer.weight.data.detach().cpu().flatten()
+                # Sau optimizer.step, trong so da bi tac dong boi co che DP
+                fc2_weight_after = target_layer.weight.data.detach().cpu().flatten()
+                inspector_clean_sample = fc2_weight_before[:100].tolist()
+                inspector_noisy_sample = fc2_weight_after[:100].tolist()
+        else:
+            # Vanilla PyTorch training loop (khong clip gradient, khong them nhieu)
+            for images, labels in self.train_loader:
+                images, labels = images.to(self.device), labels.to(self.device)
+                self.optimizer.zero_grad()
+                outputs = self.model(images)
+                loss = torch.nn.functional.nll_loss(outputs, labels)
+                loss.backward()
+                self.optimizer.step()
 
-            self.optimizer.step()
-
-            # Lấy trọng số sau khi cập nhật (đã có nhiễu DP)
-            fc2_weight_after = target_layer.weight.data.detach().cpu().flatten()
-
-            inspector_clean_sample = fc2_weight_before[:100].tolist()
-            inspector_noisy_sample = fc2_weight_after[:100].tolist()
+                total_loss += float(loss.item())
+                predicted = torch.max(outputs.data, 1)[1]
+                total_samples += labels.size(0)
+                correct_predictions += (predicted == labels).sum().item()
 
         # if inspector_clean_sample is not None and inspector_noisy_sample is not None:
         #     self._save_parameter_inspector_sample(inspector_clean_sample, inspector_noisy_sample)
@@ -140,7 +150,10 @@ class MNISTClient(fl.client.NumPyClient):
                 local_accuracy=local_accuracy,
                 local_loss=local_loss,
             )
-        epsilon = self.privacy_engine.get_epsilon(delta=1e-5)
+        if USE_DP and self.privacy_engine is not None:
+            epsilon = float(self.privacy_engine.get_epsilon(delta=1e-5))
+        else:
+            epsilon = 0.0
         fit_metrics = {"epsilon": float(epsilon)}
         if inspector_payload is not None:
             local_json_path = self._save_local_parameter_inspector_file(inspector_payload)
@@ -183,7 +196,10 @@ class MNISTClient(fl.client.NumPyClient):
                 correct += (predicted == labels).sum().item()
         
         accuracy = correct / total
-        epsilon = self.privacy_engine.get_epsilon(delta=1e-5)
+        if USE_DP and self.privacy_engine is not None:
+            epsilon = float(self.privacy_engine.get_epsilon(delta=1e-5))
+        else:
+            epsilon = 0.0
         return float(loss) / len(self.train_loader), total, {"accuracy": float(accuracy), "epsilon": float(epsilon)}
 
 if __name__ == "__main__":

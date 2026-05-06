@@ -33,10 +33,11 @@ def weighted_average(metrics):
         "avg_epsilon": sum(epsilons) / total_examples
     }
 class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
-    def __init__(self, patience=3, *args, **kwargs):
+    def __init__(self, is_dp: bool = True, patience=3, *args, **kwargs):
         self.global_history_accuracy = []
         self.global_history_loss = []
         self.global_history_epsilon = []
+        self.is_dp = bool(is_dp)
         kwargs["on_evaluate_config_fn"] = self._build_evaluate_config
         super().__init__(*args, **kwargs)
         self.patience = patience  # Số vòng "chịu đựng" tối đa nếu không cải thiện
@@ -176,11 +177,14 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
             state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
             model.load_state_dict(state_dict, strict=True)
             
-            # Đảm bảo thư mục results tồn tại và lưu mô hình
+            # Đảm bảo thư mục results tồn tại và lưu mô hình theo mode + round
             self._ensure_results_dir()
-            save_path = os.path.join("results", "global_model_latest.pth")
+            mode_tag = "dp" if self.is_dp else "nodp"
+            save_path = os.path.join("results", f"global_model_{mode_tag}_round_{server_round}.pth")
+            latest_path = os.path.join("results", f"global_model_{mode_tag}_latest.pth")
             model_to_save = model._module if hasattr(model, "_module") else model
             torch.save(model_to_save.state_dict(), save_path)
+            torch.save(model_to_save.state_dict(), latest_path)
             
         return aggregated_parameters, aggregated_metrics
     
@@ -237,13 +241,17 @@ class EarlyStoppingFedAvg(fl.server.strategy.FedAvg):
         return super().configure_evaluate(server_round, parameters, client_manager)
 
 def main():
+    # Toggle cau hinh thi nghiem: True = With DP, False = No-DP.
+    IS_DP = False
+
     # Định nghĩa chiến lược hợp nhất FedAvg
     strategy = EarlyStoppingFedAvg(
+        is_dp=IS_DP,
         patience=3, # Nếu 3 vòng liên tiếp accuracy không tăng -> Dừng
         fraction_fit=1.0,
-        min_fit_clients = 3,
-        min_available_clients = 3,
-        min_evaluate_clients = 3,
+        min_fit_clients = 2,
+        min_available_clients = 2,
+        min_evaluate_clients = 2,
         fit_metrics_aggregation_fn=weighted_average,
         evaluate_metrics_aggregation_fn=weighted_average,
     )
@@ -254,25 +262,42 @@ def main():
     print("[*] Server đang lắng nghe trên 0.0.0.0:8080 (LAN/Wi-Fi).")
     history = fl.server.start_server(
         server_address="0.0.0.0:8080",
-        config=fl.server.ServerConfig(num_rounds=3), #Thay số vòng bằng 3 để lưu model
+        config=fl.server.ServerConfig(num_rounds=20), #Thay số vòng bằng 3 để lưu model
         strategy=strategy,
     )
 
-    # 5. Lưu kết quả
+    # 5. Luu ket qua train history de dashboard doc theo cung schema JSON
     print("\n--- ĐANG LƯU KẾT QUẢ HUẤN LUYỆN ---")
     if not os.path.exists(os.path.join("results")):
         os.makedirs(os.path.join("results"))
 
     acc_history = history.metrics_distributed.get("accuracy", [])
-    eps_history = history.metrics_distributed_fit.get("avg_epsilon", [])
+    # avg_epsilon duoc tong hop trong aggregate_evaluate (distributed evaluate),
+    # khong nam trong distributed_fit.
+    eps_history = history.metrics_distributed.get("avg_epsilon", [])
+    loss_history = history.losses_distributed
+
+    history_accuracy = [float(acc) for _, acc in acc_history]
+    history_epsilon = [float(eps) for _, eps in eps_history]
+    history_loss = [float(loss) for _, loss in loss_history]
+
+    if not IS_DP:
+        # No-DP: giu lai 20 round cuoi de so sanh voi run co DP.
+        history_accuracy = history_accuracy[-20:]
+        history_epsilon = history_epsilon[-20:]
+        history_loss = history_loss[-20:]
+
     results_data = {
-        "history_accuracy": [acc for _, acc in acc_history],
-        "history_epsilon": [eps for _, eps in eps_history],
-        "history_loss": [loss for _, loss in history.losses_distributed]
+        "history_accuracy": history_accuracy,
+        "history_epsilon": history_epsilon,
+        "history_loss": history_loss,
     }
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join("results", f"experiment_20rounds_{timestamp}.json")
+    if IS_DP:
+        filename = os.path.join("results", f"experiment_dp_{timestamp}.json")
+    else:
+        filename = os.path.join("results", f"experiment_nodp_last20rounds_{timestamp}.json")
     
     with open(filename, "w") as f:
         json.dump(results_data, f, indent=4)
